@@ -1057,8 +1057,13 @@ input, textarea {
   color: var(--color-text-muted);
 }
 
-/* --- Responsive --- */
+/* --- Responsive Design (Tablets + Phones) --- */
 @media (max-width: 768px) {
+  :root {
+    --header-height: 64px;
+    --space-16: 3rem;
+  }
+
   .hero-title {
     font-size: 2.2rem;
   }
@@ -1079,15 +1084,26 @@ input, textarea {
 
   .pricing-grid {
     grid-template-columns: 1fr;
-    max-width: 360px;
+    max-width: 380px;
+    margin: 0 auto;
   }
 
   .account-grid {
     grid-template-columns: 1fr;
   }
 
+  /* Make navbar smoothly scrollable so all items fit nicely */
   .navbar-links {
     gap: var(--space-1);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+    /* Hide scrollbar */
+    -ms-overflow-style: none;  
+    scrollbar-width: none;  
+  }
+  .navbar-links::-webkit-scrollbar {
+    display: none;
   }
 
   .navbar-link {
@@ -1097,6 +1113,64 @@ input, textarea {
 
   .container {
     padding: 0 var(--space-4);
+  }
+
+  .auth-card {
+    padding: var(--space-6);
+  }
+  
+  .player-overlay {
+    padding: var(--space-4);
+  }
+  .player-overlay h3 {
+    font-size: var(--font-size-xl);
+  }
+  .player-overlay p {
+    font-size: var(--font-size-sm);
+  }
+  .player-info {
+    padding: 0 var(--space-4) var(--space-8);
+  }
+}
+
+@media (max-width: 480px) {
+  .hero-title {
+    font-size: 1.8rem;
+  }
+
+  .hero-description {
+    font-size: var(--font-size-base);
+    margin-bottom: var(--space-6);
+  }
+
+  .video-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .navbar-logo {
+    font-size: var(--font-size-lg);
+    gap: var(--space-2);
+  }
+
+  .navbar-logo-icon {
+    width: 28px;
+    height: 28px;
+    font-size: var(--font-size-sm);
+  }
+
+  .section-title {
+    font-size: var(--font-size-2xl);
+  }
+
+  .pricing-card {
+    padding: var(--space-6);
+  }
+  
+  .toast {
+    left: var(--space-4);
+    right: var(--space-4);
+    bottom: var(--space-4);
+    max-width: none;
   }
 }
 
