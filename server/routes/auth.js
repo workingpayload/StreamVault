@@ -137,7 +137,7 @@ router.get('/me', authenticate, (req, res) => {
   );
 
   // Check admin status
-  const adminEmail = process.env.ADMIN_EMAIL || '';
+  const adminEmail = (process.env.ADMIN_EMAIL || '').replace(/['"]/g, '');
   const adminEmails = adminEmail.split(',').map(e => e.trim().toLowerCase());
   const isAdmin = adminEmails.includes(req.user.email.toLowerCase());
 

@@ -10,7 +10,7 @@ function requireAdmin(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminEmail = (process.env.ADMIN_EMAIL || '').replace(/['"]/g, '');
 
   if (!adminEmail) {
     return res.status(403).json({ error: 'Admin not configured' });
