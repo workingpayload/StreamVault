@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 export default function Watch() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { isSubscribed } = useAuth();
+  const { isSubscribed, isAdmin } = useAuth();
   const videoRef = useRef(null);
   const [video, setVideo] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -73,7 +73,7 @@ export default function Watch() {
         </button>
 
         <div className="player-wrapper">
-          {isSubscribed ? (
+          {(isSubscribed || isAdmin) ? (
             <video
               ref={videoRef}
               controls

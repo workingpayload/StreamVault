@@ -9,6 +9,14 @@ function requireSubscription(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
+  // Admin users bypass subscription check
+  const adminEmail = process.env.ADMIN_EMAIL || '';
+  const adminEmails = adminEmail.split(',').map(e => e.trim().toLowerCase());
+  if (adminEmails.includes(req.user.email.toLowerCase())) {
+    req.subscription = { plan: 'admin', status: 'active' };
+    return next();
+  }
+
   const subscription = get(
     `SELECT * FROM subscriptions
      WHERE user_id = ? AND status = 'active' AND expires_at > datetime('now')
