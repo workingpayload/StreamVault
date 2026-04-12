@@ -18,17 +18,12 @@ export default function Watch() {
 
   const fetchVideoInfo = async () => {
     try {
-      const response = await api('/videos');
+      const response = await api(`/videos/${id}/info`);
       if (response.ok) {
         const data = await response.json();
-        const found = data.videos.find((v) => String(v.id) === String(id));
-        if (found) {
-          setVideo(found);
-        } else {
-          setError('Video not found');
-        }
+        setVideo(data.video);
       } else {
-        setError('Failed to load video info');
+        setError('Video not found');
       }
     } catch {
       setError('Failed to load video info');

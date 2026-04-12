@@ -69,7 +69,7 @@ async function refreshVideoCache() {
 
   // Fetch messages with video content
   const messages = [];
-  for await (const message of tg.iterMessages(entity, { limit: 500 })) {
+  for await (const message of tg.iterMessages(entity, { limit: undefined })) {
     if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
       messages.push(message);
     }

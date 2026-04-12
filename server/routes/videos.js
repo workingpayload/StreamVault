@@ -13,6 +13,21 @@ const router = express.Router();
  */
 router.get('/', authenticate, (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 24;
+    const sort = req.query.sort || 'newest';
+    const offset = (page - 1) * limit;
+
+    let orderClause = 'telegram_message_id DESC';
+    if (sort === 'oldest') orderClause = 'telegram_message_id ASC';
+    else if (sort === 'size_desc') orderClause = 'file_size DESC';
+    else if (sort === 'size_asc') orderClause = 'file_size ASC';
+    else if (sort === 'duration_desc') orderClause = 'duration DESC';
+
+    const countRow = get('SELECT COUNT(*) as total FROM video_cache');
+    const total = countRow ? countRow.total : 0;
+    const totalPages = Math.ceil(total / limit);
+
     const videos = all(`
       SELECT
         telegram_message_id as id,
@@ -26,8 +41,9 @@ router.get('/', authenticate, (req, res) => {
         thumbnail_path,
         cached_at
       FROM video_cache
-      ORDER BY telegram_message_id DESC
-    `);
+      ORDER BY ${orderClause}
+      LIMIT ? OFFSET ?
+    `, [limit, offset]);
 
     const videosWithUrls = videos.map((v) => ({
       ...v,
@@ -35,7 +51,15 @@ router.get('/', authenticate, (req, res) => {
       thumbnail_path: undefined,
     }));
 
-    res.json({ videos: videosWithUrls });
+    res.json({
+      videos: videosWithUrls,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages
+      }
+    });
   } catch (err) {
     console.error('List videos error:', err);
     res.status(500).json({ error: 'Failed to fetch videos' });
@@ -97,6 +121,31 @@ router.get('/:id/thumbnail', (req, res) => {
   } catch (err) {
     console.error('Thumbnail error:', err);
     res.status(500).json({ error: 'Failed to load thumbnail' });
+  }
+});
+
+/**
+ * GET /api/videos/:id/info
+ * Get metadata for a specific video
+ */
+router.get('/:id/info', authenticate, (req, res) => {
+  try {
+    const video = get(`
+      SELECT
+        telegram_message_id as id, title, description, duration,
+        file_size, mime_type, width, height, cached_at
+      FROM video_cache
+      WHERE telegram_message_id = ?
+    `, [parseInt(req.params.id)]);
+
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    res.json({ video });
+  } catch (err) {
+    console.error('Video info error:', err);
+    res.status(500).json({ error: 'Failed to load video info' });
   }
 });
 

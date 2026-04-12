@@ -11,6 +11,8 @@ export default function Admin() {
   const [users, setUsers] = useState([]);
   const [subscriptions, setSubscriptions] = useState([]);
   const [videos, setVideos] = useState([]);
+  const [videoPage, setVideoPage] = useState(1);
+  const [videoTotalPages, setVideoTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [grantModal, setGrantModal] = useState(null); // { userId, userName }
@@ -28,8 +30,11 @@ export default function Admin() {
   useEffect(() => {
     if (activeTab === 'users') loadUsers();
     if (activeTab === 'subscriptions') loadSubscriptions();
-    if (activeTab === 'videos') loadVideos();
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'videos') loadVideos(videoPage);
+  }, [activeTab, videoPage]);
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
@@ -60,9 +65,15 @@ export default function Admin() {
     if (res.ok) setSubscriptions((await res.json()).subscriptions);
   };
 
-  const loadVideos = async () => {
-    const res = await api('/admin/videos');
-    if (res.ok) setVideos((await res.json()).videos);
+  const loadVideos = async (page) => {
+    const res = await api(`/admin/videos?page=${page}&limit=50`);
+    if (res.ok) {
+      const data = await res.json();
+      setVideos(data.videos);
+      if (data.pagination) {
+        setVideoTotalPages(data.pagination.totalPages);
+      }
+    }
   };
 
   const handleDeleteVideo = async (id) => {
@@ -97,7 +108,8 @@ export default function Admin() {
     if (res.ok) {
       const data = await res.json();
       showToast(data.message);
-      loadVideos();
+      setVideoPage(1);
+      loadVideos(1);
       loadDashboard();
     } else {
       showToast('Failed to refresh videos', 'error');
@@ -392,6 +404,28 @@ export default function Admin() {
                 <div className="empty-state-icon">🎬</div>
                 <h3>No Videos Cached</h3>
                 <p>Click "Refresh from Telegram" to fetch videos from your channel.</p>
+              </div>
+            )}
+
+            {videoTotalPages > 1 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'var(--space-4)' }}>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  disabled={videoPage === 1}
+                  onClick={() => setVideoPage(videoPage - 1)}
+                >
+                  ← Prev
+                </button>
+                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
+                  Page {videoPage} of {videoTotalPages}
+                </span>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  disabled={videoPage === videoTotalPages}
+                  onClick={() => setVideoPage(videoPage + 1)}
+                >
+                  Next →
+                </button>
               </div>
             )}
           </div>

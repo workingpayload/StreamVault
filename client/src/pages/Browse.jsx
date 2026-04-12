@@ -10,17 +10,28 @@ export default function Browse() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const { isSubscribed } = useAuth();
+  
+  // Pagination & Sorting State
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [sort, setSort] = useState('newest');
+  const [totalVideos, setTotalVideos] = useState(0);
 
   useEffect(() => {
-    fetchVideos();
-  }, []);
+    fetchVideos(page, sort);
+  }, [page, sort]);
 
-  const fetchVideos = async () => {
+  const fetchVideos = async (currentPage, currentSort) => {
+    setLoading(true);
     try {
-      const response = await api('/videos');
+      const response = await api(`/videos?page=${currentPage}&limit=24&sort=${currentSort}`);
       if (response.ok) {
         const data = await response.json();
         setVideos(data.videos);
+        if (data.pagination) {
+          setTotalPages(data.pagination.totalPages);
+          setTotalVideos(data.pagination.total);
+        }
       } else {
         setError('Failed to load videos');
       }
@@ -37,7 +48,8 @@ export default function Browse() {
     try {
       const response = await api('/videos/refresh', { method: 'POST' });
       if (response.ok) {
-        await fetchVideos();
+        setPage(1); // Reset to first page
+        await fetchVideos(1, sort);
       } else {
         const data = await response.json();
         setError(data.error || 'Failed to refresh');
@@ -49,7 +61,7 @@ export default function Browse() {
     }
   };
 
-  if (loading) {
+  if (loading && videos.length === 0) {
     return (
       <div className="page loading-page">
         <div className="spinner"></div>
@@ -124,7 +136,7 @@ export default function Browse() {
             </div>
           )}
 
-          {videos.length === 0 ? (
+          {videos.length === 0 && !loading ? (
             <div className="empty-state">
               <div className="empty-state-icon">📹</div>
               <h3>No Videos Yet</h3>
@@ -137,11 +149,67 @@ export default function Browse() {
               </button>
             </div>
           ) : (
-            <div className="video-grid">
-              {videos.map((video, index) => (
-                <VideoCard key={video.id} video={video} index={index} />
-              ))}
-            </div>
+            <>
+              {/* Controls (Sort) */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
+                <div style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--font-size-sm)' }}>
+                  Showing {videos.length} videos (Total: {totalVideos})
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                  <label style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>Sort by:</label>
+                  <select 
+                    className="input" 
+                    style={{ padding: 'var(--space-2) var(--space-4)', width: 'auto' }}
+                    value={sort}
+                    onChange={(e) => { setSort(e.target.value); setPage(1); }}
+                  >
+                    <option value="newest">Newest First</option>
+                    <option value="oldest">Oldest First</option>
+                    <option value="size_desc">Largest Size</option>
+                    <option value="size_asc">Smallest Size</option>
+                    <option value="duration_desc">Longest Duration</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="video-grid">
+                {videos.map((video, index) => (
+                  <VideoCard key={video.id} video={video} index={index} />
+                ))}
+              </div>
+
+              {/* Pagination Controls */}
+              {totalPages > 1 && (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'center', 
+                  alignItems: 'center', 
+                  gap: 'var(--space-4)', 
+                  marginTop: 'var(--space-10)',
+                  flexWrap: 'wrap' 
+                }}>
+                  <button 
+                    className="btn btn-secondary" 
+                    disabled={page === 1}
+                    onClick={() => setPage(page - 1)}
+                  >
+                    ← Previous
+                  </button>
+                  
+                  <span style={{ fontWeight: '500', color: 'var(--color-text-secondary)' }}>
+                    Page {page} of {totalPages}
+                  </span>
+                  
+                  <button 
+                    className="btn btn-secondary" 
+                    disabled={page === totalPages}
+                    onClick={() => setPage(page + 1)}
+                  >
+                    Next →
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </section>

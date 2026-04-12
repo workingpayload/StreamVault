@@ -115,15 +115,32 @@ router.get('/subscriptions', (req, res) => {
  */
 router.get('/videos', (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = (page - 1) * limit;
+
+    const countRow = get('SELECT COUNT(*) as total FROM video_cache');
+    const total = countRow ? countRow.total : 0;
+    const totalPages = Math.ceil(total / limit);
+
     const videos = all(`
       SELECT
         telegram_message_id as id, title, description, duration,
         file_size, mime_type, width, height, cached_at
       FROM video_cache
       ORDER BY telegram_message_id DESC
-    `);
+      LIMIT ? OFFSET ?
+    `, [limit, offset]);
 
-    res.json({ videos });
+    res.json({
+      videos,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages
+      }
+    });
   } catch (err) {
     console.error('Admin videos error:', err);
     res.status(500).json({ error: 'Failed to load videos' });
