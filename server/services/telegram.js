@@ -48,6 +48,22 @@ function getClient() {
 }
 
 /**
+ * Disconnect the Telegram client gracefully.
+ */
+async function closeTelegramClient() {
+  if (client && isConnected) {
+    try {
+      console.log('🔄 Disconnecting Telegram client...');
+      await client.disconnect();
+      isConnected = false;
+      console.log('✅ Telegram client disconnected gracefully');
+    } catch (err) {
+      console.error('Failed to disconnect Telegram client:', err.message);
+    }
+  }
+}
+
+/**
  * Fetch all video messages from the configured Telegram channel
  * and cache their metadata in the database.
  */
@@ -325,6 +341,7 @@ function getVideoHeight(attributes) {
 
 module.exports = {
   initTelegramClient,
+  closeTelegramClient,
   getClient,
   refreshVideoCache,
   streamVideo,

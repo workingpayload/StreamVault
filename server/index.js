@@ -90,4 +90,21 @@ async function start() {
   }
 }
 
+// --- Graceful Shutdown ---
+async function shutdown() {
+  console.log('\n🛑 Shutting down server gracefully...');
+  const { closeTelegramClient } = require('./services/telegram');
+  await closeTelegramClient();
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+// For nodemon restarts
+process.on('SIGUSR2', async () => {
+  const { closeTelegramClient } = require('./services/telegram');
+  await closeTelegramClient();
+  process.kill(process.pid, 'SIGUSR2');
+});
+
 start();
