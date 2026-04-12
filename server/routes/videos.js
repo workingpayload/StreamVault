@@ -77,7 +77,7 @@ router.post('/refresh', authenticate, (req, res) => {
   }
 
   // Fire and forget — the sync state is managed inside refreshVideoCache
-  refreshVideoCache({ limit: 50, type: 'new' }).catch(() => {});
+  refreshVideoCache({ scanLimit: 500, maxVideos: 100, type: 'new' }).catch(() => {});
 
   res.json({ status: 'started', type: 'new', message: 'Sync started in background' });
 });
@@ -99,7 +99,7 @@ router.post('/refresh-older', authenticate, (req, res) => {
     return res.status(400).json({ error: 'No cached videos yet. Sync new videos first.' });
   }
 
-  refreshVideoCache({ limit: 50, offsetId: minId, type: 'older' }).catch(() => {});
+  refreshVideoCache({ scanLimit: 500, maxVideos: 100, offsetId: minId, type: 'older' }).catch(() => {});
 
   res.json({ status: 'started', type: 'older', message: 'Loading older videos in background' });
 });
@@ -113,7 +113,15 @@ router.get('/sync-status', authenticate, (req, res) => {
 
   if (sync.running) {
     const elapsed = Math.round((Date.now() - sync.startedAt) / 1000);
-    return res.json({ status: 'running', type: sync.type, elapsed, found: sync.found });
+
+    // Auto-reset if stuck for over 2 minutes
+    if (elapsed > 120) {
+      console.warn('⚠️ Sync stuck for >120s, force-resetting...');
+      sync.running = false;
+      sync.error = 'Sync timed out after 2 minutes';
+    } else {
+      return res.json({ status: 'running', type: sync.type, elapsed, found: sync.found });
+    }
   }
 
   if (sync.error) {

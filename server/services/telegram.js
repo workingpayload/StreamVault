@@ -114,9 +114,12 @@ async function refreshVideoCache(options = {}) {
     const tg = getClient();
     const channelId = process.env.TELEGRAM_CHANNEL_ID;
 
-    const limit = options.limit || 50;
+    // How many RAW messages to scan (not filtered — this is fast, ~5 API calls)
+    const scanLimit = options.scanLimit || 500;
     const offsetId = options.offsetId || 0;
     const minId = options.minId || 0;
+    // Max videos to collect from this scan
+    const maxVideos = options.maxVideos || 100;
 
     let entity;
     try {
@@ -130,20 +133,28 @@ async function refreshVideoCache(options = {}) {
       throw new Error('Could not access Telegram channel. Check TELEGRAM_CHANNEL_ID.');
     }
 
-    console.log(`📡 Starting Telegram fetch (limit=${limit}, offsetId=${offsetId}, minId=${minId})`);
+    console.log(`📡 Scanning ${scanLimit} messages (offsetId=${offsetId}, maxVideos=${maxVideos})`);
 
-    // Fetch messages with video content — save each one incrementally
+    // Hard timeout: abort after 90 seconds no matter what
+    let timedOut = false;
+    const timeoutId = setTimeout(() => { timedOut = true; }, 90000);
+
     let count = 0;
-    let entity_for_thumbs = entity;
     const thumbMessages = [];
 
     try {
+      // NO filter — scan raw messages. This is dramatically faster because
+      // limit applies to raw message count, not filtered results.
       for await (const message of tg.iterMessages(entity, {
-        limit,
+        limit: scanLimit,
         offsetId,
         minId,
-        filter: new Api.InputMessagesFilterVideo()
       })) {
+        if (timedOut) {
+          console.warn('⏱️ Sync timed out at 90s, saving what we have...');
+          break;
+        }
+
         if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
           const media = message.video || message.document;
           const caption = message.message || '';
@@ -181,24 +192,28 @@ async function refreshVideoCache(options = {}) {
           syncState.found = count;
           thumbMessages.push(message);
 
-          // Save to DB every 10 videos so progress is visible immediately
           if (count % 10 === 0) {
             saveDb();
             console.log(`   📹 Progress: ${count} videos cached so far...`);
+          }
+
+          // Stop once we've collected enough
+          if (count >= maxVideos) {
+            console.log(`   ✅ Reached maxVideos limit (${maxVideos})`);
+            break;
           }
         }
       }
     } catch (err) {
       console.error('iterMessages error:', err.message);
-      // Don't throw — save whatever we got
     }
 
-    // Final save
+    clearTimeout(timeoutId);
     saveDb();
     console.log(`✅ Sync complete: ${count} videos cached`);
 
     // Download thumbnails in background (non-blocking)
-    downloadThumbnails(tg, entity_for_thumbs, thumbMessages).catch(err => {
+    downloadThumbnails(tg, entity, thumbMessages).catch(err => {
       console.error('Thumbnail download error:', err.message);
     });
 

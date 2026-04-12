@@ -75,7 +75,7 @@ async function start() {
       await initTelegramClient();
 
       // Run cache refresh in background with small batch to avoid flood waits
-      refreshVideoCache({ limit: 50, type: 'startup' })
+      refreshVideoCache({ scanLimit: 300, maxVideos: 50, type: 'startup' })
         .then(count => console.log(`✅ Startup sync: cached ${count} videos`))
         .catch(err => {
           console.error('⚠️ Startup video sync failed:', err.message);
