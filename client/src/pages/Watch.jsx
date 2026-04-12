@@ -77,6 +77,8 @@ export default function Watch() {
             <video
               ref={videoRef}
               controls
+              controlsList="nodownload"
+              onContextMenu={(e) => e.preventDefault()}
               autoPlay
               preload="auto"
               src={`${streamUrl}?token=${encodeURIComponent(token)}`}
