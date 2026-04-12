@@ -74,12 +74,11 @@ async function start() {
     if (process.env.TELEGRAM_STRING_SESSION && process.env.TELEGRAM_STRING_SESSION !== 'your-string-session') {
       await initTelegramClient();
 
-      // Run cache refresh completely asynchronously in the background
-      refreshVideoCache()
-        .then(count => console.log(`✅ Cached ${count} videos from Telegram channel`))
+      // Run cache refresh in background with small batch to avoid flood waits
+      refreshVideoCache({ limit: 50, type: 'startup' })
+        .then(count => console.log(`✅ Startup sync: cached ${count} videos`))
         .catch(err => {
-          console.error('⚠️ Initial video cache refresh failed:', err.message);
-          console.log('   Videos can be refreshed later via the Admin UI.');
+          console.error('⚠️ Startup video sync failed:', err.message);
         });
     } else {
       console.log('⚠️ Telegram not configured. Set TELEGRAM_STRING_SESSION in .env');

@@ -10,6 +10,18 @@ let isConnected = false;
 
 const THUMBNAILS_DIR = path.join(__dirname, '..', '..', 'data', 'thumbnails');
 
+// Global sync state — shared between startup and HTTP routes
+const syncState = {
+  running: false,
+  type: null,
+  startedAt: null,
+  found: 0,
+  result: null,
+  error: null,
+};
+
+function getSyncState() { return syncState; }
+
 /**
  * Initialize the gram.js MTProto client.
  */
@@ -83,99 +95,121 @@ async function closeTelegramClient() {
 /**
  * Fetch video messages from the configured Telegram channel
  * and cache their metadata in the database.
+ * Uses small batches and saves incrementally to survive flood waits.
  */
 async function refreshVideoCache(options = {}) {
-  const tg = getClient();
-  const channelId = process.env.TELEGRAM_CHANNEL_ID;
-
-  const limit = options.limit || 500;
-  const offsetId = options.offsetId || 0;
-  const minId = options.minId || 0;
-
-  let entity;
-  try {
-    if (/^-?\d+$/.test(channelId)) {
-      entity = await tg.getEntity(BigInt(channelId));
-    } else {
-      entity = await tg.getEntity(channelId);
-    }
-  } catch (err) {
-    console.error('Failed to get channel entity:', err.message);
-    throw new Error('Could not access Telegram channel. Check TELEGRAM_CHANNEL_ID.');
+  if (syncState.running) {
+    console.warn('⚠️ A sync is already running, skipping...');
+    return 0;
   }
 
-  // Fetch messages with video content
-  const messages = [];
+  syncState.running = true;
+  syncState.type = options.type || 'new';
+  syncState.startedAt = Date.now();
+  syncState.found = 0;
+  syncState.result = null;
+  syncState.error = null;
+
   try {
-    for await (const message of tg.iterMessages(entity, { 
-      limit, 
-      offsetId, 
-      minId,
-      filter: new Api.InputMessagesFilterVideo()
-    })) {
-      if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
-        messages.push(message);
+    const tg = getClient();
+    const channelId = process.env.TELEGRAM_CHANNEL_ID;
+
+    const limit = options.limit || 50;
+    const offsetId = options.offsetId || 0;
+    const minId = options.minId || 0;
+
+    let entity;
+    try {
+      if (/^-?\d+$/.test(channelId)) {
+        entity = await tg.getEntity(BigInt(channelId));
+      } else {
+        entity = await tg.getEntity(channelId);
       }
+    } catch (err) {
+      console.error('Failed to get channel entity:', err.message);
+      throw new Error('Could not access Telegram channel. Check TELEGRAM_CHANNEL_ID.');
     }
-  } catch(err) {
-    console.error("iterMessages aborted or failed", err.message);
-  }
 
-  console.log(`📹 Found ${messages.length} videos in channel`);
+    console.log(`📡 Starting Telegram fetch (limit=${limit}, offsetId=${offsetId}, minId=${minId})`);
 
-  for (const msg of messages) {
-    const media = msg.video || msg.document;
-    const caption = msg.message || '';
+    // Fetch messages with video content — save each one incrementally
+    let count = 0;
+    let entity_for_thumbs = entity;
+    const thumbMessages = [];
 
-    const lines = caption.split('\n');
-    const title = lines[0] || `Video ${msg.id}`;
-    const description = lines.slice(1).join('\n').trim();
+    try {
+      for await (const message of tg.iterMessages(entity, {
+        limit,
+        offsetId,
+        minId,
+        filter: new Api.InputMessagesFilterVideo()
+      })) {
+        if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
+          const media = message.video || message.document;
+          const caption = message.message || '';
+          const lines = caption.split('\n');
+          const title = lines[0] || `Video ${message.id}`;
+          const description = lines.slice(1).join('\n').trim();
 
-    // Check if already cached
-    const existing = get('SELECT id FROM video_cache WHERE telegram_message_id = ?', [msg.id]);
+          const existing = get('SELECT id FROM video_cache WHERE telegram_message_id = ?', [message.id]);
 
-    if (existing) {
-      run(
-        `UPDATE video_cache SET title = ?, description = ?, duration = ?, file_size = ?,
-         mime_type = ?, width = ?, height = ?, cached_at = datetime('now')
-         WHERE telegram_message_id = ?`,
-        [
-          title,
-          description,
-          media.attributes ? getVideoDuration(media.attributes) : null,
-          media.size ? Number(media.size) : null,
-          media.mimeType || 'video/mp4',
-          getVideoWidth(media.attributes),
-          getVideoHeight(media.attributes),
-          msg.id,
-        ]
-      );
-    } else {
-      run(
-        `INSERT INTO video_cache (telegram_message_id, title, description, duration, file_size, mime_type, width, height, cached_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        [
-          msg.id,
-          title,
-          description,
-          media.attributes ? getVideoDuration(media.attributes) : null,
-          media.size ? Number(media.size) : null,
-          media.mimeType || 'video/mp4',
-          getVideoWidth(media.attributes),
-          getVideoHeight(media.attributes),
-        ]
-      );
+          if (existing) {
+            run(
+              `UPDATE video_cache SET title = ?, description = ?, duration = ?, file_size = ?,
+               mime_type = ?, width = ?, height = ?, cached_at = datetime('now')
+               WHERE telegram_message_id = ?`,
+              [title, description,
+                media.attributes ? getVideoDuration(media.attributes) : null,
+                media.size ? Number(media.size) : null,
+                media.mimeType || 'video/mp4',
+                getVideoWidth(media.attributes), getVideoHeight(media.attributes),
+                message.id]
+            );
+          } else {
+            run(
+              `INSERT INTO video_cache (telegram_message_id, title, description, duration, file_size, mime_type, width, height, cached_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+              [message.id, title, description,
+                media.attributes ? getVideoDuration(media.attributes) : null,
+                media.size ? Number(media.size) : null,
+                media.mimeType || 'video/mp4',
+                getVideoWidth(media.attributes), getVideoHeight(media.attributes)]
+            );
+          }
+
+          count++;
+          syncState.found = count;
+          thumbMessages.push(message);
+
+          // Save to DB every 10 videos so progress is visible immediately
+          if (count % 10 === 0) {
+            saveDb();
+            console.log(`   📹 Progress: ${count} videos cached so far...`);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('iterMessages error:', err.message);
+      // Don't throw — save whatever we got
     }
+
+    // Final save
+    saveDb();
+    console.log(`✅ Sync complete: ${count} videos cached`);
+
+    // Download thumbnails in background (non-blocking)
+    downloadThumbnails(tg, entity_for_thumbs, thumbMessages).catch(err => {
+      console.error('Thumbnail download error:', err.message);
+    });
+
+    syncState.running = false;
+    syncState.result = { count, message: `Synced ${count} videos` };
+    return count;
+  } catch (err) {
+    syncState.running = false;
+    syncState.error = err.message;
+    throw err;
   }
-
-  saveDb();
-
-  // Download thumbnails in background
-  downloadThumbnails(tg, entity, messages).catch(err => {
-    console.error('Thumbnail download error:', err.message);
-  });
-
-  return messages.length;
 }
 
 /**
@@ -373,6 +407,7 @@ module.exports = {
   initTelegramClient,
   closeTelegramClient,
   getClient,
+  getSyncState,
   refreshVideoCache,
   streamVideo,
 };

@@ -3,18 +3,9 @@ const fs = require('fs');
 const { all, get } = require('../database/init');
 const { authenticate } = require('../middleware/auth');
 const { requireSubscription } = require('../middleware/subscription');
-const { refreshVideoCache, streamVideo } = require('../services/telegram');
+const { refreshVideoCache, streamVideo, getSyncState } = require('../services/telegram');
 
 const router = express.Router();
-
-// --- Background sync job state ---
-let syncJob = {
-  running: false,
-  type: null,       // 'new' or 'older'
-  startedAt: null,
-  result: null,     // { count, message } on success
-  error: null,
-};
 
 /**
  * GET /api/videos
@@ -80,24 +71,13 @@ router.get('/', authenticate, (req, res) => {
  * Starts a background sync for newest videos. Returns immediately.
  */
 router.post('/refresh', authenticate, (req, res) => {
-  if (syncJob.running) {
-    return res.json({ status: 'running', type: syncJob.type, message: 'A sync is already in progress' });
+  const sync = getSyncState();
+  if (sync.running) {
+    return res.json({ status: 'running', type: sync.type, message: 'A sync is already in progress' });
   }
 
-  syncJob = { running: true, type: 'new', startedAt: Date.now(), result: null, error: null };
-
-  // Fire and forget — do NOT await
-  refreshVideoCache({ limit: 100 })
-    .then(count => {
-      syncJob.running = false;
-      syncJob.result = { count, message: `Synced ${count} newest videos` };
-      console.log(`✅ Background sync complete: ${count} videos`);
-    })
-    .catch(err => {
-      syncJob.running = false;
-      syncJob.error = err.message;
-      console.error('❌ Background sync failed:', err.message);
-    });
+  // Fire and forget — the sync state is managed inside refreshVideoCache
+  refreshVideoCache({ limit: 50, type: 'new' }).catch(() => {});
 
   res.json({ status: 'started', type: 'new', message: 'Sync started in background' });
 });
@@ -107,8 +87,9 @@ router.post('/refresh', authenticate, (req, res) => {
  * Starts a background sync for historically older videos. Returns immediately.
  */
 router.post('/refresh-older', authenticate, (req, res) => {
-  if (syncJob.running) {
-    return res.json({ status: 'running', type: syncJob.type, message: 'A sync is already in progress' });
+  const sync = getSyncState();
+  if (sync.running) {
+    return res.json({ status: 'running', type: sync.type, message: 'A sync is already in progress' });
   }
 
   const row = get('SELECT MIN(telegram_message_id) as min_id FROM video_cache');
@@ -118,19 +99,7 @@ router.post('/refresh-older', authenticate, (req, res) => {
     return res.status(400).json({ error: 'No cached videos yet. Sync new videos first.' });
   }
 
-  syncJob = { running: true, type: 'older', startedAt: Date.now(), result: null, error: null };
-
-  refreshVideoCache({ limit: 100, offsetId: minId })
-    .then(count => {
-      syncJob.running = false;
-      syncJob.result = { count, message: `Fetched ${count} older videos` };
-      console.log(`✅ Background older sync complete: ${count} videos`);
-    })
-    .catch(err => {
-      syncJob.running = false;
-      syncJob.error = err.message;
-      console.error('❌ Background older sync failed:', err.message);
-    });
+  refreshVideoCache({ limit: 50, offsetId: minId, type: 'older' }).catch(() => {});
 
   res.json({ status: 'started', type: 'older', message: 'Loading older videos in background' });
 });
@@ -140,20 +109,22 @@ router.post('/refresh-older', authenticate, (req, res) => {
  * Poll this to check if the background sync is done.
  */
 router.get('/sync-status', authenticate, (req, res) => {
-  if (syncJob.running) {
-    const elapsed = Math.round((Date.now() - syncJob.startedAt) / 1000);
-    return res.json({ status: 'running', type: syncJob.type, elapsed });
+  const sync = getSyncState();
+
+  if (sync.running) {
+    const elapsed = Math.round((Date.now() - sync.startedAt) / 1000);
+    return res.json({ status: 'running', type: sync.type, elapsed, found: sync.found });
   }
 
-  if (syncJob.error) {
-    const error = syncJob.error;
-    syncJob.error = null; // Clear after reading
+  if (sync.error) {
+    const error = sync.error;
+    sync.error = null;
     return res.json({ status: 'error', error });
   }
 
-  if (syncJob.result) {
-    const result = syncJob.result;
-    syncJob.result = null; // Clear after reading
+  if (sync.result) {
+    const result = sync.result;
+    sync.result = null;
     return res.json({ status: 'done', ...result });
   }
 

@@ -24,6 +24,25 @@ export default function Browse() {
     fetchVideos(page, sort);
   }, [page, sort]);
 
+  // On mount, check if a sync is already running (e.g. startup sync)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api('/videos/sync-status');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.status === 'running') {
+            setSyncing(true);
+            setSyncMessage('Startup sync in progress...');
+            startPolling(() => {
+              fetchVideos(page, sort);
+            });
+          }
+        }
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
   // Cleanup polling on unmount
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -61,7 +80,8 @@ export default function Browse() {
         const data = await res.json();
 
         if (data.status === 'running') {
-          setSyncMessage(`Syncing... (${data.elapsed || 0}s elapsed)`);
+          const foundMsg = data.found ? ` \u2022 ${data.found} videos found` : '';
+          setSyncMessage(`Syncing... (${data.elapsed || 0}s${foundMsg})`);
         } else if (data.status === 'done') {
           clearInterval(pollRef.current);
           pollRef.current = null;
