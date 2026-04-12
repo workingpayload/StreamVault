@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import VideoCard from '../components/VideoCard';
@@ -7,7 +7,8 @@ import Footer from '../components/Footer';
 export default function Browse() {
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
   const [error, setError] = useState('');
   const { isSubscribed } = useAuth();
   
@@ -17,9 +18,16 @@ export default function Browse() {
   const [sort, setSort] = useState('newest');
   const [totalVideos, setTotalVideos] = useState(0);
 
+  const pollRef = useRef(null);
+
   useEffect(() => {
     fetchVideos(page, sort);
   }, [page, sort]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
 
   const fetchVideos = async (currentPage, currentSort) => {
     setLoading(true);
@@ -42,22 +50,91 @@ export default function Browse() {
     }
   };
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
+  // Poll /sync-status until the background job finishes
+  const startPolling = useCallback((onDone) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await api('/videos/sync-status');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (data.status === 'running') {
+          setSyncMessage(`Syncing... (${data.elapsed || 0}s elapsed)`);
+        } else if (data.status === 'done') {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setSyncing(false);
+          setSyncMessage('');
+          if (onDone) onDone(data);
+        } else if (data.status === 'error') {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setSyncing(false);
+          setSyncMessage('');
+          setError(data.error || 'Sync failed');
+        } else {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setSyncing(false);
+          setSyncMessage('');
+        }
+      } catch {
+        // Network error during poll — keep trying
+      }
+    }, 2000);
+  }, []);
+
+  const handleSyncNew = async () => {
+    setSyncing(true);
     setError('');
+    setSyncMessage('Starting sync...');
     try {
       const response = await api('/videos/refresh', { method: 'POST' });
-      if (response.ok) {
-        setPage(1); // Reset to first page
-        await fetchVideos(1, sort);
+      const data = await response.json();
+
+      if (data.status === 'started' || data.status === 'running') {
+        startPolling(() => {
+          setPage(1);
+          fetchVideos(1, sort);
+        });
       } else {
-        const data = await response.json();
-        setError(data.error || 'Failed to refresh');
+        setSyncing(false);
+        setSyncMessage('');
+        setError(data.error || 'Unknown sync error');
       }
     } catch {
-      setError('Failed to refresh videos from Telegram');
-    } finally {
-      setRefreshing(false);
+      setSyncing(false);
+      setSyncMessage('');
+      setError('Failed to start sync');
+    }
+  };
+
+  const handleLoadOlder = async () => {
+    setSyncing(true);
+    setError('');
+    setSyncMessage('Loading older videos...');
+    try {
+      const response = await api('/videos/refresh-older', { method: 'POST' });
+      const data = await response.json();
+
+      if (data.status === 'started' || data.status === 'running') {
+        startPolling(() => {
+          fetchVideos(page, sort);
+        });
+      } else if (data.error) {
+        setSyncing(false);
+        setSyncMessage('');
+        setError(data.error);
+      } else {
+        setSyncing(false);
+        setSyncMessage('');
+      }
+    } catch {
+      setSyncing(false);
+      setSyncMessage('');
+      setError('Failed to load older videos');
     }
   };
 
@@ -91,16 +168,16 @@ export default function Browse() {
             </div>
             <button
               className="btn btn-secondary"
-              onClick={handleRefresh}
-              disabled={refreshing}
+              onClick={handleSyncNew}
+              disabled={syncing}
             >
-              {refreshing ? (
+              {syncing ? (
                 <>
                   <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }}></span>
-                  Syncing...
+                  {syncMessage || 'Syncing...'}
                 </>
               ) : (
-                '🔄 Sync New Videos'
+                '\ud83d\udd04 Sync New Videos'
               )}
             </button>
           </div>
@@ -108,6 +185,23 @@ export default function Browse() {
           {error && (
             <div className="auth-error" style={{ marginBottom: 'var(--space-6)' }}>
               {error}
+            </div>
+          )}
+
+          {/* Live sync banner */}
+          {syncing && (
+            <div className="card" style={{
+              marginBottom: 'var(--space-6)',
+              background: 'rgba(59, 130, 246, 0.08)',
+              borderColor: 'rgba(59, 130, 246, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-3)',
+            }}>
+              <span className="spinner" style={{ width: 20, height: 20, borderWidth: 2 }}></span>
+              <span style={{ color: 'var(--color-text-secondary)' }}>
+                {syncMessage || 'Syncing with Telegram...'}
+              </span>
             </div>
           )}
 
@@ -124,7 +218,7 @@ export default function Browse() {
             }}>
               <div>
                 <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: '700', marginBottom: 'var(--space-1)' }}>
-                  🔒 Subscription Required
+                  \ud83d\udd12 Subscription Required
                 </h3>
                 <p style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--font-size-sm)' }}>
                   You can browse the catalog, but a subscription is needed to watch videos.
@@ -138,14 +232,14 @@ export default function Browse() {
 
           {videos.length === 0 && !loading ? (
             <div className="empty-state">
-              <div className="empty-state-icon">📹</div>
+              <div className="empty-state-icon">\ud83d\udcf9</div>
               <h3>No Videos Yet</h3>
               <p>
-                Click "Sync New Videos" to fetch recent videos from your channel.
+                Click &quot;Sync New Videos&quot; to fetch recent videos from your channel.
                 Make sure your Telegram integration is configured.
               </p>
-              <button className="btn btn-primary" onClick={handleRefresh} disabled={refreshing}>
-                {refreshing ? 'Syncing...' : 'Sync Now'}
+              <button className="btn btn-primary" onClick={handleSyncNew} disabled={syncing}>
+                {syncing ? 'Syncing...' : 'Sync Now'}
               </button>
             </div>
           ) : (
@@ -193,7 +287,7 @@ export default function Browse() {
                     disabled={page === 1}
                     onClick={() => setPage(page - 1)}
                   >
-                    ← Previous
+                    \u2190 Previous
                   </button>
                   
                   <span style={{ fontWeight: '500', color: 'var(--color-text-secondary)' }}>
@@ -203,36 +297,36 @@ export default function Browse() {
                   {page === totalPages ? (
                     <button 
                       className="btn btn-primary" 
-                      disabled={refreshing}
-                      onClick={async () => {
-                        setRefreshing(true);
-                        setError('');
-                        try {
-                          const response = await api('/videos/refresh-older', { method: 'POST' });
-                          if (response.ok) {
-                            await fetchVideos(page, sort);
-                          } else {
-                            const data = await response.json();
-                            setError(data.error || 'Failed to fetch older videos');
-                          }
-                        } catch {
-                          setError('Failed to fetch older videos');
-                        } finally {
-                          setRefreshing(false);
-                        }
-                      }}
+                      disabled={syncing}
+                      onClick={handleLoadOlder}
                     >
-                      {refreshing ? 'Loading...' : 'Load Older Videos ↓'}
+                      {syncing ? 'Loading...' : 'Load Older Videos \u2193'}
                     </button>
                   ) : (
                     <button 
                       className="btn btn-secondary" 
-                      disabled={page === totalPages}
                       onClick={() => setPage(page + 1)}
                     >
-                      Next →
+                      Next \u2192
                     </button>
                   )}
+                </div>
+              )}
+
+              {/* Single page — still show Load Older */}
+              {totalPages <= 1 && videos.length > 0 && (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'center', 
+                  marginTop: 'var(--space-10)' 
+                }}>
+                  <button 
+                    className="btn btn-primary" 
+                    disabled={syncing}
+                    onClick={handleLoadOlder}
+                  >
+                    {syncing ? 'Loading...' : 'Load Older Videos \u2193'}
+                  </button>
                 </div>
               )}
             </>
