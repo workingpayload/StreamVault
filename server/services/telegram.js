@@ -95,7 +95,7 @@ async function closeTelegramClient() {
 /**
  * Fetch video messages from the configured Telegram channel
  * and cache their metadata in the database.
- * Uses small batches and saves incrementally to survive flood waits.
+ * Uses tg.getMessages() (single API call) with a hard timeout.
  */
 async function refreshVideoCache(options = {}) {
   if (syncState.running) {
@@ -114,12 +114,10 @@ async function refreshVideoCache(options = {}) {
     const tg = getClient();
     const channelId = process.env.TELEGRAM_CHANNEL_ID;
 
-    // How many RAW messages to scan (not filtered — this is fast, ~5 API calls)
-    const scanLimit = options.scanLimit || 500;
-    const offsetId = options.offsetId || 0;
-    const minId = options.minId || 0;
-    // Max videos to collect from this scan
-    const maxVideos = options.maxVideos || 100;
+    const batchSize = 100; // Messages per API call (Telegram max)
+    const totalScan = options.scanLimit || 500; // Total messages to scan
+    const maxVideos = options.maxVideos || 100; // Stop after this many videos
+    let offsetId = options.offsetId || 0;
 
     let entity;
     try {
@@ -133,27 +131,48 @@ async function refreshVideoCache(options = {}) {
       throw new Error('Could not access Telegram channel. Check TELEGRAM_CHANNEL_ID.');
     }
 
-    console.log(`📡 Scanning ${scanLimit} messages (offsetId=${offsetId}, maxVideos=${maxVideos})`);
-
-    // Hard timeout: abort after 90 seconds no matter what
-    let timedOut = false;
-    const timeoutId = setTimeout(() => { timedOut = true; }, 90000);
+    console.log(`📡 Scanning up to ${totalScan} messages (offsetId=${offsetId}, maxVideos=${maxVideos})`);
 
     let count = 0;
+    let scanned = 0;
     const thumbMessages = [];
 
-    try {
-      // NO filter — scan raw messages. This is dramatically faster because
-      // limit applies to raw message count, not filtered results.
-      for await (const message of tg.iterMessages(entity, {
-        limit: scanLimit,
-        offsetId,
-        minId,
-      })) {
-        if (timedOut) {
-          console.warn('⏱️ Sync timed out at 90s, saving what we have...');
+    // Fetch in batches of 100, with a hard 30s timeout per batch
+    while (scanned < totalScan && count < maxVideos) {
+      const remaining = Math.min(batchSize, totalScan - scanned);
+
+      console.log(`   📦 Fetching batch: ${remaining} messages (offset=${offsetId}, scanned=${scanned})`);
+
+      let messages;
+      try {
+        // Hard 30-second timeout per API call using Promise.race
+        messages = await Promise.race([
+          tg.getMessages(entity, {
+            limit: remaining,
+            offsetId: offsetId,
+          }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('API_TIMEOUT')), 30000)
+          ),
+        ]);
+      } catch (err) {
+        if (err.message === 'API_TIMEOUT') {
+          console.warn('⏱️ Telegram API call timed out after 30s, saving what we have...');
           break;
         }
+        // Flood wait — gram.js auto-handles these, but if it takes too long we break
+        console.error(`   ❌ Batch fetch error: ${err.message}`);
+        break;
+      }
+
+      if (!messages || messages.length === 0) {
+        console.log('   📭 No more messages in channel');
+        break;
+      }
+
+      // Process this batch
+      for (const message of messages) {
+        if (!message) continue;
 
         if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
           const media = message.video || message.document;
@@ -192,25 +211,32 @@ async function refreshVideoCache(options = {}) {
           syncState.found = count;
           thumbMessages.push(message);
 
-          if (count % 10 === 0) {
-            saveDb();
-            console.log(`   📹 Progress: ${count} videos cached so far...`);
-          }
-
-          // Stop once we've collected enough
-          if (count >= maxVideos) {
-            console.log(`   ✅ Reached maxVideos limit (${maxVideos})`);
-            break;
-          }
+          if (count >= maxVideos) break;
         }
       }
-    } catch (err) {
-      console.error('iterMessages error:', err.message);
+
+      // Save after each batch
+      saveDb();
+      console.log(`   📹 ${count} videos cached (${scanned + messages.length} messages scanned)`);
+
+      scanned += messages.length;
+
+      // Use the last message's ID as the offset for next batch
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg && lastMsg.id) {
+        offsetId = lastMsg.id;
+      } else {
+        break;
+      }
+
+      // If we got fewer messages than requested, we've reached the end
+      if (messages.length < remaining) {
+        console.log('   📭 Reached end of channel history');
+        break;
+      }
     }
 
-    clearTimeout(timeoutId);
-    saveDb();
-    console.log(`✅ Sync complete: ${count} videos cached`);
+    console.log(`✅ Sync complete: ${count} videos cached from ${scanned} messages`);
 
     // Download thumbnails in background (non-blocking)
     downloadThumbnails(tg, entity, thumbMessages).catch(err => {
