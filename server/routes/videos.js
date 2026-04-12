@@ -71,11 +71,32 @@ router.get('/', authenticate, (req, res) => {
  */
 router.post('/refresh', authenticate, async (req, res) => {
   try {
-    const count = await refreshVideoCache();
-    res.json({ message: `Refreshed ${count} videos from channel` });
+    const count = await refreshVideoCache({ limit: 500 });
+    res.json({ message: `Refreshed ${count} newest videos from channel` });
   } catch (err) {
     console.error('Refresh error:', err);
     res.status(500).json({ error: 'Failed to refresh video cache: ' + err.message });
+  }
+});
+
+/**
+ * POST /api/videos/refresh-older
+ * Loads the next 500 oldest videos.
+ */
+router.post('/refresh-older', authenticate, async (req, res) => {
+  try {
+    const row = get('SELECT MIN(telegram_message_id) as min_id FROM video_cache');
+    const minId = row && row.min_id ? row.min_id : 0;
+    
+    if (minId === 0) {
+      return res.status(400).json({ error: 'No cached videos to find history for' });
+    }
+
+    const count = await refreshVideoCache({ limit: 500, offsetId: minId });
+    res.json({ message: `Fetched ${count} historically older videos from channel` });
+  } catch (err) {
+    console.error('Refresh older error:', err);
+    res.status(500).json({ error: 'Failed to fetch older videos: ' + err.message });
   }
 });
 

@@ -81,12 +81,16 @@ async function closeTelegramClient() {
 }
 
 /**
- * Fetch all video messages from the configured Telegram channel
+ * Fetch video messages from the configured Telegram channel
  * and cache their metadata in the database.
  */
-async function refreshVideoCache() {
+async function refreshVideoCache(options = {}) {
   const tg = getClient();
   const channelId = process.env.TELEGRAM_CHANNEL_ID;
+
+  const limit = options.limit || 500;
+  const offsetId = options.offsetId || 0;
+  const minId = options.minId || 0;
 
   let entity;
   try {
@@ -102,10 +106,14 @@ async function refreshVideoCache() {
 
   // Fetch messages with video content
   const messages = [];
-  for await (const message of tg.iterMessages(entity, { limit: undefined })) {
-    if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
-      messages.push(message);
+  try {
+    for await (const message of tg.iterMessages(entity, { limit, offsetId, minId })) {
+      if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
+        messages.push(message);
+      }
     }
+  } catch(err) {
+    console.error("iterMessages aborted or failed", err.message);
   }
 
   console.log(`📹 Found ${messages.length} videos in channel`);

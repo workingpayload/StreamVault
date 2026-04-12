@@ -97,10 +97,10 @@ export default function Browse() {
               {refreshing ? (
                 <>
                   <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }}></span>
-                  Refreshing...
+                  Syncing...
                 </>
               ) : (
-                '🔄 Refresh from Telegram'
+                '🔄 Sync New Videos'
               )}
             </button>
           </div>
@@ -141,11 +141,11 @@ export default function Browse() {
               <div className="empty-state-icon">📹</div>
               <h3>No Videos Yet</h3>
               <p>
-                Click "Refresh from Telegram" to fetch videos from your channel.
+                Click "Sync New Videos" to fetch recent videos from your channel.
                 Make sure your Telegram integration is configured.
               </p>
               <button className="btn btn-primary" onClick={handleRefresh} disabled={refreshing}>
-                {refreshing ? 'Refreshing...' : 'Refresh Now'}
+                {refreshing ? 'Syncing...' : 'Sync Now'}
               </button>
             </div>
           ) : (
@@ -200,13 +200,39 @@ export default function Browse() {
                     Page {page} of {totalPages}
                   </span>
                   
-                  <button 
-                    className="btn btn-secondary" 
-                    disabled={page === totalPages}
-                    onClick={() => setPage(page + 1)}
-                  >
-                    Next →
-                  </button>
+                  {page === totalPages ? (
+                    <button 
+                      className="btn btn-primary" 
+                      disabled={refreshing}
+                      onClick={async () => {
+                        setRefreshing(true);
+                        setError('');
+                        try {
+                          const response = await api('/videos/refresh-older', { method: 'POST' });
+                          if (response.ok) {
+                            await fetchVideos(page, sort);
+                          } else {
+                            const data = await response.json();
+                            setError(data.error || 'Failed to fetch older videos');
+                          }
+                        } catch {
+                          setError('Failed to fetch older videos');
+                        } finally {
+                          setRefreshing(false);
+                        }
+                      }}
+                    >
+                      {refreshing ? 'Loading...' : 'Load Older Videos ↓'}
+                    </button>
+                  ) : (
+                    <button 
+                      className="btn btn-secondary" 
+                      disabled={page === totalPages}
+                      onClick={() => setPage(page + 1)}
+                    >
+                      Next →
+                    </button>
+                  )}
                 </div>
               )}
             </>
