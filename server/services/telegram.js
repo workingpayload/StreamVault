@@ -25,9 +25,26 @@ async function initTelegramClient() {
     useWSS: false,
   });
 
-  await client.connect();
-  isConnected = true;
-  console.log('✅ Telegram MTProto client connected');
+  const maxRetries = 12; // 60 seconds total wait
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await client.connect();
+      isConnected = true;
+      console.log('✅ Telegram MTProto client connected');
+      break;
+    } catch (err) {
+      if (err.message?.includes('AUTH_KEY_DUPLICATED') || err.errorMessage === 'AUTH_KEY_DUPLICATED') {
+        console.warn(`⚠️ Telegram session duplicated (likely Railway zero-downtime deployment overlay). Waiting 5s for old instance to disconnect... (${i + 1}/${maxRetries})`);
+        await new Promise(res => setTimeout(res, 5000));
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (!isConnected) {
+    throw new Error('Timeout waiting for AUTH_KEY_DUPLICATED to resolve. Make sure no other instances or local servers are running the same session!');
+  }
 
   // Ensure thumbnails directory exists
   if (!fs.existsSync(THUMBNAILS_DIR)) {
