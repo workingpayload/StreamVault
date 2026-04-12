@@ -107,7 +107,12 @@ async function refreshVideoCache(options = {}) {
   // Fetch messages with video content
   const messages = [];
   try {
-    for await (const message of tg.iterMessages(entity, { limit, offsetId, minId })) {
+    for await (const message of tg.iterMessages(entity, { 
+      limit, 
+      offsetId, 
+      minId,
+      filter: new Api.InputMessagesFilterVideo()
+    })) {
       if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
         messages.push(message);
       }

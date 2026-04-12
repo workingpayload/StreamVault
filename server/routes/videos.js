@@ -71,7 +71,7 @@ router.get('/', authenticate, (req, res) => {
  */
 router.post('/refresh', authenticate, async (req, res) => {
   try {
-    const count = await refreshVideoCache({ limit: 500 });
+    const count = await refreshVideoCache({ limit: 100 });
     res.json({ message: `Refreshed ${count} newest videos from channel` });
   } catch (err) {
     console.error('Refresh error:', err);
@@ -92,7 +92,7 @@ router.post('/refresh-older', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'No cached videos to find history for' });
     }
 
-    const count = await refreshVideoCache({ limit: 500, offsetId: minId });
+    const count = await refreshVideoCache({ limit: 100, offsetId: minId });
     res.json({ message: `Fetched ${count} historically older videos from channel` });
   } catch (err) {
     console.error('Refresh older error:', err);
