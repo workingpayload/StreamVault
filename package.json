@@ -1,0 +1,33 @@
+{
+  "name": "streamvault",
+  "version": "1.0.0",
+  "description": "Subscription-based video streaming from Telegram",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "server:dev": "node --watch server/index.js",
+    "client:dev": "npx --prefix client vite --host",
+    "postinstall": "npm install --prefix client",
+    "build": "npm run --prefix client build",
+    "start": "node server/index.js",
+    "generate-session": "node scripts/generate-session.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "razorpay": "^2.9.5",
+    "sql.js": "^1.11.0",
+    "telegram": "^2.26.16",
+    "input": "^1.0.1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
