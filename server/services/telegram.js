@@ -1,5 +1,6 @@
 const { TelegramClient, Api } = require('telegram');
 const { StringSession } = require('telegram/sessions');
+const bigInt = require('big-integer');
 const { get, run, saveDb } = require('../database/init');
 const path = require('path');
 const fs = require('fs');
@@ -229,34 +230,58 @@ async function streamVideo(messageId, req, res) {
     thumbSize: '',
   });
 
-  const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
-  let offset = start;
+  // Chunk size must be a power of 2, max 1MB. Offset must be divisible by chunk size.
+  const CHUNK_SIZE = 1024 * 1024; // 1MB
   const targetEnd = end + 1;
 
+  // Align the starting offset down to the nearest chunk boundary
+  const alignedStart = start - (start % CHUNK_SIZE);
+  let currentOffset = alignedStart;
+  let isFirstChunk = true;
+
   try {
-    for await (const chunk of tg.iterDownload({
-      file: fileLocation,
-      offset: BigInt(offset),
-      requestSize: CHUNK_SIZE,
-      limit: Math.ceil((targetEnd - start) / CHUNK_SIZE),
-    })) {
+    while (currentOffset < targetEnd) {
       if (res.destroyed) break;
 
-      let data = Buffer.from(chunk);
+      const result = await tg.invoke(
+        new Api.upload.GetFile({
+          location: fileLocation,
+          offset: bigInt(currentOffset),
+          limit: CHUNK_SIZE,
+        })
+      );
 
-      const remaining = targetEnd - offset;
-      if (data.length > remaining) {
-        data = data.subarray(0, remaining);
+      if (!result || !result.bytes || result.bytes.length === 0) break;
+
+      let data = Buffer.from(result.bytes);
+
+      // For the first chunk, skip bytes before the requested start
+      if (isFirstChunk && start > alignedStart) {
+        data = data.subarray(start - alignedStart);
+        isFirstChunk = false;
       }
 
-      const canWrite = res.write(data);
-      offset += data.length;
-
-      if (offset >= targetEnd) break;
-
-      if (!canWrite) {
-        await new Promise((resolve) => res.once('drain', resolve));
+      // Trim the last chunk if we got more than needed
+      const bytesWrittenSoFar = currentOffset + (isFirstChunk ? 0 : (start - alignedStart)) ;
+      const endOfThisChunk = currentOffset + result.bytes.length;
+      if (endOfThisChunk > targetEnd) {
+        const excess = endOfThisChunk - targetEnd;
+        data = data.subarray(0, data.length - excess);
       }
+
+      if (data.length > 0) {
+        const canWrite = res.write(data);
+
+        // Handle backpressure
+        if (!canWrite) {
+          await new Promise((resolve) => res.once('drain', resolve));
+        }
+      }
+
+      currentOffset += CHUNK_SIZE;
+      isFirstChunk = false;
+
+      if (currentOffset >= targetEnd) break;
     }
   } catch (err) {
     console.error('Stream error:', err.message);
