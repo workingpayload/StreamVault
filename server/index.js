@@ -64,26 +64,27 @@ async function start() {
     await initDb();
     console.log('✅ Database initialized');
 
+    // Start the Express listener immediately so Railway Health Checks pass!
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`\n🚀 StreamVault server running on port ${PORT}`);
+      console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+    });
+
     // Initialize Telegram client
     if (process.env.TELEGRAM_STRING_SESSION && process.env.TELEGRAM_STRING_SESSION !== 'your-string-session') {
       await initTelegramClient();
 
-      try {
-        const count = await refreshVideoCache();
-        console.log(`✅ Cached ${count} videos from Telegram channel`);
-      } catch (err) {
-        console.error('⚠️ Initial video cache refresh failed:', err.message);
-        console.log('   Videos can be refreshed later via the UI.');
-      }
+      // Run cache refresh completely asynchronously in the background
+      refreshVideoCache()
+        .then(count => console.log(`✅ Cached ${count} videos from Telegram channel`))
+        .catch(err => {
+          console.error('⚠️ Initial video cache refresh failed:', err.message);
+          console.log('   Videos can be refreshed later via the Admin UI.');
+        });
     } else {
       console.log('⚠️ Telegram not configured. Set TELEGRAM_STRING_SESSION in .env');
       console.log('   Run: npm run generate-session');
     }
-
-    app.listen(PORT, () => {
-      console.log(`\n🚀 StreamVault server running on http://localhost:${PORT}`);
-      console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-    });
   } catch (err) {
     console.error('Failed to start server:', err);
     process.exit(1);
