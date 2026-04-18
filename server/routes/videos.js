@@ -12,15 +12,24 @@ const router = express.Router();
  * Diagnostic endpoint - returns raw Telegram channel info.
  */
 router.get('/debug', async (req, res) => {
-  try {
-    const info = await debugFetch();
-    const dbCount = get('SELECT COUNT(*) as count FROM video_cache');
-    info.cachedVideos = dbCount ? dbCount.count : 0;
-    info.syncState = { ...getSyncState() };
-    res.json(info);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  const dbCount = get('SELECT COUNT(*) as count FROM video_cache');
+  const result = {
+    cachedVideos: dbCount ? dbCount.count : 0,
+    syncState: { ...getSyncState() },
+    channelId: process.env.TELEGRAM_CHANNEL_ID || 'NOT SET',
+    telegramTest: null,
+  };
+
+  if (req.query.test === 'true') {
+    try {
+      const info = await debugFetch();
+      result.telegramTest = info;
+    } catch (err) {
+      result.telegramTest = { error: err.message };
+    }
   }
+
+  res.json(result);
 });
 
 /**

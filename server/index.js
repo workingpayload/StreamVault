@@ -70,16 +70,10 @@ async function start() {
       console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
     });
 
-    // Initialize Telegram client
+    // Initialize Telegram client (connection only — NO auto-sync)
     if (process.env.TELEGRAM_STRING_SESSION && process.env.TELEGRAM_STRING_SESSION !== 'your-string-session') {
       await initTelegramClient();
-
-      // Run cache refresh in background with small batch to avoid flood waits
-      refreshVideoCache({ scanLimit: 300, maxVideos: 50, type: 'startup' })
-        .then(count => console.log(`✅ Startup sync: cached ${count} videos`))
-        .catch(err => {
-          console.error('⚠️ Startup video sync failed:', err.message);
-        });
+      console.log('   Telegram ready. Use "Sync New Videos" in the Browse page to fetch videos.');
     } else {
       console.log('⚠️ Telegram not configured. Set TELEGRAM_STRING_SESSION in .env');
       console.log('   Run: npm run generate-session');
