@@ -22,7 +22,11 @@ router.get('/debug', async (req, res) => {
 
   if (req.query.test === 'true') {
     try {
-      const info = await debugFetch();
+      // Wrap EVERYTHING in a 15s timeout at the route level
+      const info = await Promise.race([
+        debugFetch(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('TELEGRAM_TIMEOUT_15s')), 15000)),
+      ]);
       result.telegramTest = info;
     } catch (err) {
       result.telegramTest = { error: err.message };
