@@ -98,49 +98,83 @@ async function getEntity() {
 }
 
 /**
- * Debug: fetch 5 raw messages and return diagnostics.
+ * Debug: layered diagnostics to find exactly where things break.
  */
 async function debugFetch() {
-  const tg = getClient();
-  const info = { channelId: process.env.TELEGRAM_CHANNEL_ID, connected: isConnected, messages: [], error: null };
+  const info = {
+    channelId: process.env.TELEGRAM_CHANNEL_ID,
+    clientExists: !!client,
+    isConnectedFlag: isConnected,
+    clientConnected: client ? client.connected : false,
+    steps: {},
+  };
 
+  if (!client) {
+    info.steps.error = 'No client instance';
+    return info;
+  }
+
+  // Step 1: Try reconnecting if needed
   try {
-    const entity = await getEntity();
-    info.entityType = entity.className;
-
-    // 15-second hard timeout
-    const result = await Promise.race([
-      tg.invoke(new Api.messages.GetHistory({
-        peer: entity,
-        offsetId: 0,
-        offsetDate: 0,
-        addOffset: 0,
-        limit: 5,
-        maxId: 0,
-        minId: 0,
-        hash: bigInt(0),
-      })),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DEBUG_TIMEOUT_15s')), 15000)),
-    ]);
-
-    info.totalCount = result.count;
-    info.returnedCount = result.messages?.length || 0;
-
-    for (const msg of (result.messages || [])) {
-      const m = { id: msg.id, className: msg.className };
-      if (msg.media) {
-        m.mediaClassName = msg.media.className;
-        if (msg.media.document) {
-          m.mimeType = msg.media.document.mimeType;
-          m.size = Number(msg.media.document.size);
-          m.attributes = (msg.media.document.attributes || []).map(a => a.className);
-        }
-      }
-      m.text = (msg.message || '').substring(0, 80);
-      info.messages.push(m);
+    if (!client.connected) {
+      info.steps.reconnect = 'attempting...';
+      await client.connect();
+      info.steps.reconnect = 'reconnected';
+    } else {
+      info.steps.reconnect = 'already connected';
     }
   } catch (err) {
-    info.error = err.message;
+    info.steps.reconnect = 'failed: ' + err.message;
+    return info;
+  }
+
+  // Step 2: Simplest API call — getMe()
+  try {
+    const me = await Promise.race([
+      client.getMe(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT_10s')), 10000)),
+    ]);
+    info.steps.getMe = { ok: true, id: String(me.id), username: me.username };
+  } catch (err) {
+    info.steps.getMe = { ok: false, error: err.message };
+    info.steps.diagnosis = 'Session may be invalid. Regenerate TELEGRAM_STRING_SESSION.';
+    return info;
+  }
+
+  // Step 3: Resolve channel entity
+  try {
+    const entity = await Promise.race([
+      getEntity(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT_10s')), 10000)),
+    ]);
+    info.steps.getEntity = { ok: true, type: entity.className };
+  } catch (err) {
+    info.steps.getEntity = { ok: false, error: err.message };
+    info.steps.diagnosis = 'Cannot access channel. Check TELEGRAM_CHANNEL_ID.';
+    return info;
+  }
+
+  // Step 4: Fetch 3 messages
+  try {
+    const entity = await getEntity();
+    const result = await Promise.race([
+      client.invoke(new Api.messages.GetHistory({
+        peer: entity,
+        offsetId: 0, offsetDate: 0, addOffset: 0,
+        limit: 3, maxId: 0, minId: 0, hash: bigInt(0),
+      })),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT_10s')), 10000)),
+    ]);
+    info.steps.getHistory = { ok: true, total: result.count, returned: result.messages?.length || 0 };
+    info.messages = (result.messages || []).map(msg => ({
+      id: msg.id,
+      hasMedia: !!msg.media,
+      mediaType: msg.media?.className,
+      mimeType: msg.media?.document?.mimeType,
+      text: (msg.message || '').substring(0, 60),
+    }));
+  } catch (err) {
+    info.steps.getHistory = { ok: false, error: err.message };
   }
 
   return info;
