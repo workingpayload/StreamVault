@@ -252,7 +252,7 @@ export default function Browse() {
 
           {videos.length === 0 && !loading ? (
             <div className="empty-state">
-              <div className="empty-state-icon">\ud83d\udcf9</div>
+              <div className="empty-state-icon">{'\ud83d\udcf9'}</div>
               <h3>No Videos Yet</h3>
               <p>
                 Click &quot;Sync New Videos&quot; to fetch recent videos from your channel.
@@ -307,7 +307,7 @@ export default function Browse() {
                     disabled={page === 1}
                     onClick={() => setPage(page - 1)}
                   >
-                    \u2190 Previous
+                    {'\u2190'} Previous
                   </button>
                   
                   <span style={{ fontWeight: '500', color: 'var(--color-text-secondary)' }}>
@@ -320,14 +320,14 @@ export default function Browse() {
                       disabled={syncing}
                       onClick={handleLoadOlder}
                     >
-                      {syncing ? 'Loading...' : 'Load Older Videos \u2193'}
+                      {syncing ? 'Loading...' : <>Load Older Videos {'\u2193'}</>}
                     </button>
                   ) : (
                     <button 
                       className="btn btn-secondary" 
                       onClick={() => setPage(page + 1)}
                     >
-                      Next \u2192
+                      Next {'\u2192'}
                     </button>
                   )}
                 </div>
@@ -345,7 +345,7 @@ export default function Browse() {
                     disabled={syncing}
                     onClick={handleLoadOlder}
                   >
-                    {syncing ? 'Loading...' : 'Load Older Videos \u2193'}
+                    {syncing ? 'Loading...' : <>Load Older Videos {'\u2193'}</>}
                   </button>
                 </div>
               )}

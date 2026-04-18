@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "generated_at": "2026-04-18T00:00:00Z",
+  "checkpoint": "on-demand",
+  "file_count": 27,
+  "module_count": 10,
+  "git_sha": "a0335427f49ac31944c0efa9694090542efa13c8",
+  "hot_files_window_days": null,
+  "hot_files_scope": "all-history"
+}
