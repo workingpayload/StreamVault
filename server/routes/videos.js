@@ -11,7 +11,7 @@ const router = express.Router();
  * GET /api/videos/debug
  * Diagnostic endpoint - returns raw Telegram channel info.
  */
-router.get('/debug', authenticate, async (req, res) => {
+router.get('/debug', async (req, res) => {
   try {
     const info = await debugFetch();
     const dbCount = get('SELECT COUNT(*) as count FROM video_cache');
