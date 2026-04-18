@@ -35,6 +35,7 @@ async function initTelegramClient() {
   client = new TelegramClient(stringSession, apiId, apiHash, {
     connectionRetries: 5,
     useWSS: false,
+    floodSleepThreshold: 10, // Throw error instead of sleeping on flood waits > 10s
   });
 
   const maxRetries = 12;
@@ -107,16 +108,20 @@ async function debugFetch() {
     const entity = await getEntity();
     info.entityType = entity.className;
 
-    const result = await tg.invoke(new Api.messages.GetHistory({
-      peer: entity,
-      offsetId: 0,
-      offsetDate: 0,
-      addOffset: 0,
-      limit: 5,
-      maxId: 0,
-      minId: 0,
-      hash: bigInt(0),
-    }));
+    // 15-second hard timeout
+    const result = await Promise.race([
+      tg.invoke(new Api.messages.GetHistory({
+        peer: entity,
+        offsetId: 0,
+        offsetDate: 0,
+        addOffset: 0,
+        limit: 5,
+        maxId: 0,
+        minId: 0,
+        hash: bigInt(0),
+      })),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('DEBUG_TIMEOUT_15s')), 15000)),
+    ]);
 
     info.totalCount = result.count;
     info.returnedCount = result.messages?.length || 0;
