@@ -197,7 +197,7 @@ export default function Browse() {
                   {syncMessage || 'Syncing...'}
                 </>
               ) : (
-                '\ud83d\udd04 Sync New Videos'
+                '🔄 Sync New Videos'
               )}
             </button>
           </div>
@@ -238,7 +238,7 @@ export default function Browse() {
             }}>
               <div>
                 <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: '700', marginBottom: 'var(--space-1)' }}>
-                  \ud83d\udd12 Subscription Required
+                  🔒 Subscription Required
                 </h3>
                 <p style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--font-size-sm)' }}>
                   You can browse the catalog, but a subscription is needed to watch videos.
