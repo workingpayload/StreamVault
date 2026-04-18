@@ -201,6 +201,10 @@ async function refreshVideoCache(options = {}) {
     const tg = getClient();
     const entity = await getEntity();
 
+    if (!fs.existsSync(THUMBNAILS_DIR)) {
+      fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
+    }
+
     const batchSize = 100;
     const totalScan = options.scanLimit || 500;
     const maxVideos = options.maxVideos || 100;
@@ -258,25 +262,28 @@ async function refreshVideoCache(options = {}) {
         const title = lines[0] || `Video ${msg.id}`;
         const description = lines.slice(1).join('\n').trim();
 
+        const thumbPath = await downloadThumbnail(tg, doc, msg.id);
+
         const existing = get('SELECT id FROM video_cache WHERE telegram_message_id = ?', [msg.id]);
 
         if (existing) {
           run(
             `UPDATE video_cache SET title = ?, description = ?, duration = ?, file_size = ?,
-             mime_type = ?, width = ?, height = ?, cached_at = datetime('now')
+             mime_type = ?, width = ?, height = ?, thumbnail_path = COALESCE(?, thumbnail_path),
+             cached_at = datetime('now')
              WHERE telegram_message_id = ?`,
             [title, description,
               getVideoDuration(doc.attributes), Number(doc.size),
               doc.mimeType, getVideoWidth(doc.attributes), getVideoHeight(doc.attributes),
-              msg.id]
+              thumbPath, msg.id]
           );
         } else {
           run(
-            `INSERT INTO video_cache (telegram_message_id, title, description, duration, file_size, mime_type, width, height, cached_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+            `INSERT INTO video_cache (telegram_message_id, title, description, duration, file_size, thumbnail_path, mime_type, width, height, cached_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
             [msg.id, title, description,
               getVideoDuration(doc.attributes), Number(doc.size),
-              doc.mimeType, getVideoWidth(doc.attributes), getVideoHeight(doc.attributes)]
+              thumbPath, doc.mimeType, getVideoWidth(doc.attributes), getVideoHeight(doc.attributes)]
           );
         }
 
@@ -427,6 +434,32 @@ async function streamVideo(messageId, req, res) {
   }
 
   res.end();
+}
+
+async function downloadThumbnail(tg, doc, messageId) {
+  try {
+    const thumbs = doc.thumbs;
+    if (!thumbs || thumbs.length === 0) return null;
+
+    const thumb = thumbs[thumbs.length - 1];
+    const thumbPath = path.join(THUMBNAILS_DIR, `${messageId}.jpg`);
+
+    if (fs.existsSync(thumbPath)) return thumbPath;
+
+    const buffer = await Promise.race([
+      tg.downloadMedia(doc, { thumb: thumb }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('THUMB_TIMEOUT')), 10000)),
+    ]);
+
+    if (buffer && buffer.length > 0) {
+      fs.writeFileSync(thumbPath, buffer);
+      return thumbPath;
+    }
+    return null;
+  } catch (err) {
+    console.error(`   ⚠️ Thumb ${messageId}: ${err.message}`);
+    return null;
+  }
 }
 
 function getVideoDuration(attributes) {

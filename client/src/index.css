@@ -262,6 +262,20 @@ input, textarea {
   color: var(--color-text-muted);
 }
 
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239999a5' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: var(--space-8);
+  cursor: pointer;
+}
+
+select.input option {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
 /* --- Cards --- */
 .card {
   background: var(--color-bg-card);
