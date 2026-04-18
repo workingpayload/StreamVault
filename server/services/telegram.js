@@ -37,7 +37,7 @@ async function initTelegramClient() {
     useWSS: false,
   });
 
-  const maxRetries = 12; // 60 seconds total wait
+  const maxRetries = 12;
   for (let i = 0; i < maxRetries; i++) {
     try {
       await client.connect();
@@ -46,7 +46,7 @@ async function initTelegramClient() {
       break;
     } catch (err) {
       if (err.message?.includes('AUTH_KEY_DUPLICATED') || err.errorMessage === 'AUTH_KEY_DUPLICATED') {
-        console.warn(`⚠️ Telegram session duplicated (likely Railway zero-downtime deployment overlay). Waiting 5s for old instance to disconnect... (${i + 1}/${maxRetries})`);
+        console.warn(`⚠️ AUTH_KEY_DUPLICATED — waiting 5s... (${i + 1}/${maxRetries})`);
         await new Promise(res => setTimeout(res, 5000));
       } else {
         throw err;
@@ -55,10 +55,9 @@ async function initTelegramClient() {
   }
 
   if (!isConnected) {
-    throw new Error('Timeout waiting for AUTH_KEY_DUPLICATED to resolve. Make sure no other instances or local servers are running the same session!');
+    throw new Error('Timeout waiting for AUTH_KEY_DUPLICATED to resolve.');
   }
 
-  // Ensure thumbnails directory exists
   if (!fs.existsSync(THUMBNAILS_DIR)) {
     fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
   }
@@ -66,40 +65,89 @@ async function initTelegramClient() {
   return client;
 }
 
-/**
- * Get the Telegram client instance.
- */
 function getClient() {
   if (!client || !isConnected) {
-    throw new Error('Telegram client not initialized. Call initTelegramClient() first.');
+    throw new Error('Telegram client not initialized.');
   }
   return client;
 }
 
-/**
- * Disconnect the Telegram client gracefully.
- */
 async function closeTelegramClient() {
   if (client && isConnected) {
     try {
-      console.log('🔄 Disconnecting Telegram client...');
       await client.disconnect();
       isConnected = false;
-      console.log('✅ Telegram client disconnected gracefully');
+      console.log('✅ Telegram client disconnected');
     } catch (err) {
-      console.error('Failed to disconnect Telegram client:', err.message);
+      console.error('Disconnect error:', err.message);
     }
   }
 }
 
 /**
- * Fetch video messages from the configured Telegram channel
- * and cache their metadata in the database.
- * Uses tg.getMessages() (single API call) with a hard timeout.
+ * Resolve the channel entity.
+ */
+async function getEntity() {
+  const tg = getClient();
+  const channelId = process.env.TELEGRAM_CHANNEL_ID;
+  if (/^-?\d+$/.test(channelId)) {
+    return await tg.getEntity(BigInt(channelId));
+  }
+  return await tg.getEntity(channelId);
+}
+
+/**
+ * Debug: fetch 5 raw messages and return diagnostics.
+ */
+async function debugFetch() {
+  const tg = getClient();
+  const info = { channelId: process.env.TELEGRAM_CHANNEL_ID, connected: isConnected, messages: [], error: null };
+
+  try {
+    const entity = await getEntity();
+    info.entityType = entity.className;
+
+    const result = await tg.invoke(new Api.messages.GetHistory({
+      peer: entity,
+      offsetId: 0,
+      offsetDate: 0,
+      addOffset: 0,
+      limit: 5,
+      maxId: 0,
+      minId: 0,
+      hash: bigInt(0),
+    }));
+
+    info.totalCount = result.count;
+    info.returnedCount = result.messages?.length || 0;
+
+    for (const msg of (result.messages || [])) {
+      const m = { id: msg.id, className: msg.className };
+      if (msg.media) {
+        m.mediaClassName = msg.media.className;
+        if (msg.media.document) {
+          m.mimeType = msg.media.document.mimeType;
+          m.size = Number(msg.media.document.size);
+          m.attributes = (msg.media.document.attributes || []).map(a => a.className);
+        }
+      }
+      m.text = (msg.message || '').substring(0, 80);
+      info.messages.push(m);
+    }
+  } catch (err) {
+    info.error = err.message;
+  }
+
+  return info;
+}
+
+/**
+ * Fetch video messages using raw Api.messages.GetHistory.
+ * No wrappers, no generators — direct MTProto invoke with hard timeouts.
  */
 async function refreshVideoCache(options = {}) {
   if (syncState.running) {
-    console.warn('⚠️ A sync is already running, skipping...');
+    console.warn('⚠️ Sync already running, skipping...');
     return 0;
   }
 
@@ -112,136 +160,110 @@ async function refreshVideoCache(options = {}) {
 
   try {
     const tg = getClient();
-    const channelId = process.env.TELEGRAM_CHANNEL_ID;
+    const entity = await getEntity();
 
-    const batchSize = 100; // Messages per API call (Telegram max)
-    const totalScan = options.scanLimit || 500; // Total messages to scan
-    const maxVideos = options.maxVideos || 100; // Stop after this many videos
+    const batchSize = 100;
+    const totalScan = options.scanLimit || 500;
+    const maxVideos = options.maxVideos || 100;
     let offsetId = options.offsetId || 0;
 
-    let entity;
-    try {
-      if (/^-?\d+$/.test(channelId)) {
-        entity = await tg.getEntity(BigInt(channelId));
-      } else {
-        entity = await tg.getEntity(channelId);
-      }
-    } catch (err) {
-      console.error('Failed to get channel entity:', err.message);
-      throw new Error('Could not access Telegram channel. Check TELEGRAM_CHANNEL_ID.');
-    }
-
-    console.log(`📡 Scanning up to ${totalScan} messages (offsetId=${offsetId}, maxVideos=${maxVideos})`);
+    console.log(`📡 Sync start: scan=${totalScan}, maxVideos=${maxVideos}, offsetId=${offsetId}`);
 
     let count = 0;
     let scanned = 0;
-    const thumbMessages = [];
 
-    // Fetch in batches of 100, with a hard 30s timeout per batch
     while (scanned < totalScan && count < maxVideos) {
-      const remaining = Math.min(batchSize, totalScan - scanned);
+      const limit = Math.min(batchSize, totalScan - scanned);
 
-      console.log(`   📦 Fetching batch: ${remaining} messages (offset=${offsetId}, scanned=${scanned})`);
-
-      let messages;
+      let result;
       try {
-        // Hard 30-second timeout per API call using Promise.race
-        messages = await Promise.race([
-          tg.getMessages(entity, {
-            limit: remaining,
+        result = await Promise.race([
+          tg.invoke(new Api.messages.GetHistory({
+            peer: entity,
             offsetId: offsetId,
-          }),
+            offsetDate: 0,
+            addOffset: 0,
+            limit: limit,
+            maxId: 0,
+            minId: 0,
+            hash: bigInt(0),
+          })),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error('API_TIMEOUT')), 30000)
           ),
         ]);
       } catch (err) {
-        if (err.message === 'API_TIMEOUT') {
-          console.warn('⏱️ Telegram API call timed out after 30s, saving what we have...');
-          break;
-        }
-        // Flood wait — gram.js auto-handles these, but if it takes too long we break
-        console.error(`   ❌ Batch fetch error: ${err.message}`);
+        console.error(`   ❌ Batch error: ${err.message}`);
         break;
       }
 
-      if (!messages || messages.length === 0) {
-        console.log('   📭 No more messages in channel');
+      const messages = result?.messages || [];
+      if (messages.length === 0) {
+        console.log('   📭 No more messages');
         break;
       }
 
-      // Process this batch
-      for (const message of messages) {
-        if (!message) continue;
+      console.log(`   📦 Got ${messages.length} msgs (channel total: ${result.count})`);
 
-        if (message.video || (message.document && message.document.mimeType && message.document.mimeType.startsWith('video/'))) {
-          const media = message.video || message.document;
-          const caption = message.message || '';
-          const lines = caption.split('\n');
-          const title = lines[0] || `Video ${message.id}`;
-          const description = lines.slice(1).join('\n').trim();
+      for (const msg of messages) {
+        if (!msg || !msg.media) continue;
 
-          const existing = get('SELECT id FROM video_cache WHERE telegram_message_id = ?', [message.id]);
+        const doc = msg.media.document;
+        if (!doc || !doc.mimeType) continue;
 
-          if (existing) {
-            run(
-              `UPDATE video_cache SET title = ?, description = ?, duration = ?, file_size = ?,
-               mime_type = ?, width = ?, height = ?, cached_at = datetime('now')
-               WHERE telegram_message_id = ?`,
-              [title, description,
-                media.attributes ? getVideoDuration(media.attributes) : null,
-                media.size ? Number(media.size) : null,
-                media.mimeType || 'video/mp4',
-                getVideoWidth(media.attributes), getVideoHeight(media.attributes),
-                message.id]
-            );
-          } else {
-            run(
-              `INSERT INTO video_cache (telegram_message_id, title, description, duration, file_size, mime_type, width, height, cached_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-              [message.id, title, description,
-                media.attributes ? getVideoDuration(media.attributes) : null,
-                media.size ? Number(media.size) : null,
-                media.mimeType || 'video/mp4',
-                getVideoWidth(media.attributes), getVideoHeight(media.attributes)]
-            );
-          }
+        const isVideo = doc.mimeType.startsWith('video/');
+        if (!isVideo) continue;
 
-          count++;
-          syncState.found = count;
-          thumbMessages.push(message);
+        const caption = msg.message || '';
+        const lines = caption.split('\n');
+        const title = lines[0] || `Video ${msg.id}`;
+        const description = lines.slice(1).join('\n').trim();
 
-          if (count >= maxVideos) break;
+        const existing = get('SELECT id FROM video_cache WHERE telegram_message_id = ?', [msg.id]);
+
+        if (existing) {
+          run(
+            `UPDATE video_cache SET title = ?, description = ?, duration = ?, file_size = ?,
+             mime_type = ?, width = ?, height = ?, cached_at = datetime('now')
+             WHERE telegram_message_id = ?`,
+            [title, description,
+              getVideoDuration(doc.attributes), Number(doc.size),
+              doc.mimeType, getVideoWidth(doc.attributes), getVideoHeight(doc.attributes),
+              msg.id]
+          );
+        } else {
+          run(
+            `INSERT INTO video_cache (telegram_message_id, title, description, duration, file_size, mime_type, width, height, cached_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+            [msg.id, title, description,
+              getVideoDuration(doc.attributes), Number(doc.size),
+              doc.mimeType, getVideoWidth(doc.attributes), getVideoHeight(doc.attributes)]
+          );
         }
+
+        count++;
+        syncState.found = count;
+        if (count >= maxVideos) break;
       }
 
-      // Save after each batch
       saveDb();
-      console.log(`   📹 ${count} videos cached (${scanned + messages.length} messages scanned)`);
-
       scanned += messages.length;
+      console.log(`   📹 ${count} videos / ${scanned} scanned`);
 
-      // Use the last message's ID as the offset for next batch
       const lastMsg = messages[messages.length - 1];
-      if (lastMsg && lastMsg.id) {
+      if (lastMsg?.id) {
         offsetId = lastMsg.id;
       } else {
         break;
       }
 
-      // If we got fewer messages than requested, we've reached the end
-      if (messages.length < remaining) {
-        console.log('   📭 Reached end of channel history');
+      if (messages.length < limit) {
+        console.log('   📭 End of history');
         break;
       }
     }
 
-    console.log(`✅ Sync complete: ${count} videos cached from ${scanned} messages`);
-
-    // Download thumbnails in background (non-blocking)
-    downloadThumbnails(tg, entity, thumbMessages).catch(err => {
-      console.error('Thumbnail download error:', err.message);
-    });
+    console.log(`✅ Done: ${count} videos from ${scanned} messages`);
 
     syncState.running = false;
     syncState.result = { count, message: `Synced ${count} videos` };
@@ -249,54 +271,17 @@ async function refreshVideoCache(options = {}) {
   } catch (err) {
     syncState.running = false;
     syncState.error = err.message;
+    console.error('❌ Sync failed:', err.message);
     throw err;
   }
 }
 
 /**
- * Download thumbnails for videos that don't have them cached yet.
- */
-async function downloadThumbnails(tg, entity, messages) {
-  for (const msg of messages) {
-    const thumbPath = path.join(THUMBNAILS_DIR, `${msg.id}.jpg`);
-
-    if (fs.existsSync(thumbPath)) {
-      run('UPDATE video_cache SET thumbnail_path = ? WHERE telegram_message_id = ?', [thumbPath, msg.id]);
-      continue;
-    }
-
-    try {
-      const media = msg.video || msg.document;
-      if (media && media.thumbs && media.thumbs.length > 0) {
-        const buffer = await tg.downloadMedia(msg, {
-          thumb: media.thumbs[media.thumbs.length - 1],
-        });
-
-        if (buffer) {
-          fs.writeFileSync(thumbPath, buffer);
-          run('UPDATE video_cache SET thumbnail_path = ? WHERE telegram_message_id = ?', [thumbPath, msg.id]);
-        }
-      }
-    } catch (err) {
-      console.error(`Failed to download thumbnail for message ${msg.id}:`, err.message);
-    }
-  }
-}
-
-/**
  * Stream a video file from Telegram by message ID.
- * Supports HTTP Range requests for seeking.
  */
 async function streamVideo(messageId, req, res) {
   const tg = getClient();
-  const channelId = process.env.TELEGRAM_CHANNEL_ID;
-
-  let entity;
-  if (/^-?\d+$/.test(channelId)) {
-    entity = await tg.getEntity(BigInt(channelId));
-  } else {
-    entity = await tg.getEntity(channelId);
-  }
+  const entity = await getEntity();
 
   const messages = await tg.getMessages(entity, { ids: [parseInt(messageId)] });
   if (!messages || messages.length === 0 || !messages[0]) {
@@ -351,11 +336,8 @@ async function streamVideo(messageId, req, res) {
     thumbSize: '',
   });
 
-  // Chunk size must be a power of 2, max 1MB. Offset must be divisible by chunk size.
-  const CHUNK_SIZE = 1024 * 1024; // 1MB
+  const CHUNK_SIZE = 1024 * 1024;
   const targetEnd = end + 1;
-
-  // Align the starting offset down to the nearest chunk boundary
   const alignedStart = start - (start % CHUNK_SIZE);
   let currentOffset = alignedStart;
   let isFirstChunk = true;
@@ -376,14 +358,11 @@ async function streamVideo(messageId, req, res) {
 
       let data = Buffer.from(result.bytes);
 
-      // For the first chunk, skip bytes before the requested start
       if (isFirstChunk && start > alignedStart) {
         data = data.subarray(start - alignedStart);
         isFirstChunk = false;
       }
 
-      // Trim the last chunk if we got more than needed
-      const bytesWrittenSoFar = currentOffset + (isFirstChunk ? 0 : (start - alignedStart)) ;
       const endOfThisChunk = currentOffset + result.bytes.length;
       if (endOfThisChunk > targetEnd) {
         const excess = endOfThisChunk - targetEnd;
@@ -392,8 +371,6 @@ async function streamVideo(messageId, req, res) {
 
       if (data.length > 0) {
         const canWrite = res.write(data);
-
-        // Handle backpressure
         if (!canWrite) {
           await new Promise((resolve) => res.once('drain', resolve));
         }
@@ -401,7 +378,6 @@ async function streamVideo(messageId, req, res) {
 
       currentOffset += CHUNK_SIZE;
       isFirstChunk = false;
-
       if (currentOffset >= targetEnd) break;
     }
   } catch (err) {
@@ -417,9 +393,7 @@ async function streamVideo(messageId, req, res) {
 function getVideoDuration(attributes) {
   if (!attributes) return null;
   for (const attr of attributes) {
-    if (attr.className === 'DocumentAttributeVideo' && attr.duration) {
-      return attr.duration;
-    }
+    if (attr.className === 'DocumentAttributeVideo' && attr.duration) return attr.duration;
   }
   return null;
 }
@@ -427,9 +401,7 @@ function getVideoDuration(attributes) {
 function getVideoWidth(attributes) {
   if (!attributes) return null;
   for (const attr of attributes) {
-    if (attr.className === 'DocumentAttributeVideo' && attr.w) {
-      return attr.w;
-    }
+    if (attr.className === 'DocumentAttributeVideo' && attr.w) return attr.w;
   }
   return null;
 }
@@ -437,9 +409,7 @@ function getVideoWidth(attributes) {
 function getVideoHeight(attributes) {
   if (!attributes) return null;
   for (const attr of attributes) {
-    if (attr.className === 'DocumentAttributeVideo' && attr.h) {
-      return attr.h;
-    }
+    if (attr.className === 'DocumentAttributeVideo' && attr.h) return attr.h;
   }
   return null;
 }
@@ -449,6 +419,7 @@ module.exports = {
   closeTelegramClient,
   getClient,
   getSyncState,
+  debugFetch,
   refreshVideoCache,
   streamVideo,
 };

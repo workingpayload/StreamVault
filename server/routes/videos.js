@@ -3,13 +3,29 @@ const fs = require('fs');
 const { all, get } = require('../database/init');
 const { authenticate } = require('../middleware/auth');
 const { requireSubscription } = require('../middleware/subscription');
-const { refreshVideoCache, streamVideo, getSyncState } = require('../services/telegram');
+const { refreshVideoCache, streamVideo, getSyncState, debugFetch } = require('../services/telegram');
 
 const router = express.Router();
 
 /**
+ * GET /api/videos/debug
+ * Diagnostic endpoint - returns raw Telegram channel info.
+ */
+router.get('/debug', authenticate, async (req, res) => {
+  try {
+    const info = await debugFetch();
+    const dbCount = get('SELECT COUNT(*) as count FROM video_cache');
+    info.cachedVideos = dbCount ? dbCount.count : 0;
+    info.syncState = { ...getSyncState() };
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/videos
- * List all videos from the cache. Requires authentication.
+ * List cached videos with pagination and sorting.
  */
 router.get('/', authenticate, (req, res) => {
   try {
@@ -30,16 +46,8 @@ router.get('/', authenticate, (req, res) => {
 
     const videos = all(`
       SELECT
-        telegram_message_id as id,
-        title,
-        description,
-        duration,
-        file_size,
-        mime_type,
-        width,
-        height,
-        thumbnail_path,
-        cached_at
+        telegram_message_id as id, title, description, duration,
+        file_size, mime_type, width, height, thumbnail_path, cached_at
       FROM video_cache
       ORDER BY ${orderClause}
       LIMIT ? OFFSET ?
@@ -53,12 +61,7 @@ router.get('/', authenticate, (req, res) => {
 
     res.json({
       videos: videosWithUrls,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages
-      }
+      pagination: { page, limit, total, totalPages }
     });
   } catch (err) {
     console.error('List videos error:', err);
@@ -68,28 +71,24 @@ router.get('/', authenticate, (req, res) => {
 
 /**
  * POST /api/videos/refresh
- * Starts a background sync for newest videos. Returns immediately.
  */
 router.post('/refresh', authenticate, (req, res) => {
   const sync = getSyncState();
   if (sync.running) {
-    return res.json({ status: 'running', type: sync.type, message: 'A sync is already in progress' });
+    return res.json({ status: 'running', type: sync.type, message: 'Sync already in progress' });
   }
 
-  // Fire and forget — the sync state is managed inside refreshVideoCache
   refreshVideoCache({ scanLimit: 500, maxVideos: 100, type: 'new' }).catch(() => {});
-
-  res.json({ status: 'started', type: 'new', message: 'Sync started in background' });
+  res.json({ status: 'started', type: 'new', message: 'Sync started' });
 });
 
 /**
  * POST /api/videos/refresh-older
- * Starts a background sync for historically older videos. Returns immediately.
  */
 router.post('/refresh-older', authenticate, (req, res) => {
   const sync = getSyncState();
   if (sync.running) {
-    return res.json({ status: 'running', type: sync.type, message: 'A sync is already in progress' });
+    return res.json({ status: 'running', type: sync.type, message: 'Sync already in progress' });
   }
 
   const row = get('SELECT MIN(telegram_message_id) as min_id FROM video_cache');
@@ -100,13 +99,11 @@ router.post('/refresh-older', authenticate, (req, res) => {
   }
 
   refreshVideoCache({ scanLimit: 500, maxVideos: 100, offsetId: minId, type: 'older' }).catch(() => {});
-
-  res.json({ status: 'started', type: 'older', message: 'Loading older videos in background' });
+  res.json({ status: 'started', type: 'older', message: 'Loading older videos' });
 });
 
 /**
  * GET /api/videos/sync-status
- * Poll this to check if the background sync is done.
  */
 router.get('/sync-status', authenticate, (req, res) => {
   const sync = getSyncState();
@@ -114,9 +111,8 @@ router.get('/sync-status', authenticate, (req, res) => {
   if (sync.running) {
     const elapsed = Math.round((Date.now() - sync.startedAt) / 1000);
 
-    // Auto-reset if stuck for over 2 minutes
     if (elapsed > 120) {
-      console.warn('⚠️ Sync stuck for >120s, force-resetting...');
+      console.warn('⚠️ Sync stuck >120s, force-resetting...');
       sync.running = false;
       sync.error = 'Sync timed out after 2 minutes';
     } else {
@@ -144,20 +140,12 @@ router.get('/sync-status', authenticate, (req, res) => {
  */
 router.get('/:id/stream', authenticate, requireSubscription, async (req, res) => {
   try {
-    const messageId = req.params.id;
-
-    const video = get('SELECT * FROM video_cache WHERE telegram_message_id = ?', [parseInt(messageId)]);
-
-    if (!video) {
-      return res.status(404).json({ error: 'Video not found' });
-    }
-
-    await streamVideo(messageId, req, res);
+    const video = get('SELECT * FROM video_cache WHERE telegram_message_id = ?', [parseInt(req.params.id)]);
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+    await streamVideo(req.params.id, req, res);
   } catch (err) {
     console.error('Stream error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Streaming failed' });
-    }
+    if (!res.headersSent) res.status(500).json({ error: 'Streaming failed' });
   }
 });
 
@@ -166,15 +154,10 @@ router.get('/:id/stream', authenticate, requireSubscription, async (req, res) =>
  */
 router.get('/:id/thumbnail', (req, res) => {
   try {
-    const video = get(
-      'SELECT thumbnail_path FROM video_cache WHERE telegram_message_id = ?',
-      [parseInt(req.params.id)]
-    );
-
+    const video = get('SELECT thumbnail_path FROM video_cache WHERE telegram_message_id = ?', [parseInt(req.params.id)]);
     if (!video || !video.thumbnail_path || !fs.existsSync(video.thumbnail_path)) {
       return res.status(404).json({ error: 'Thumbnail not found' });
     }
-
     res.set('Content-Type', 'image/jpeg');
     res.set('Cache-Control', 'public, max-age=86400');
     fs.createReadStream(video.thumbnail_path).pipe(res);
@@ -186,22 +169,16 @@ router.get('/:id/thumbnail', (req, res) => {
 
 /**
  * GET /api/videos/:id/info
- * Get metadata for a specific video
  */
 router.get('/:id/info', authenticate, (req, res) => {
   try {
     const video = get(`
-      SELECT
-        telegram_message_id as id, title, description, duration,
+      SELECT telegram_message_id as id, title, description, duration,
         file_size, mime_type, width, height, cached_at
-      FROM video_cache
-      WHERE telegram_message_id = ?
+      FROM video_cache WHERE telegram_message_id = ?
     `, [parseInt(req.params.id)]);
 
-    if (!video) {
-      return res.status(404).json({ error: 'Video not found' });
-    }
-
+    if (!video) return res.status(404).json({ error: 'Video not found' });
     res.json({ video });
   } catch (err) {
     console.error('Video info error:', err);
